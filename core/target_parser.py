@@ -4,15 +4,15 @@ Parse targets from various formats: CIDR, ranges, files, AD enumeration
 """
 
 import ipaddress
+import os
 import re
 import subprocess
 import platform
 from typing import List, Set
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from impacket.dcerpc.v5 import transport, samr
-from impacket.ldap import ldap, ldapasn1
-from impacket.smbconnection import SMBConnection
 import socket
+
+from core.auth import connect_ldap
 
 
 def _is_valid_unicast_ip(ip: str) -> bool:
@@ -188,124 +188,18 @@ class TargetParser:
                     print(f"[!] Could not resolve domain: {self.config.domain}")
                     return
 
-            # Build LDAP connection string
-            if self.config.use_ldaps:
-                ldap_scheme = 'ldaps'
-                ldap_port = 636
-            else:
-                ldap_scheme = 'ldap'
-                ldap_port = 389
-
-            # Connect to LDAP
-            ldap_url = f"{ldap_scheme}://{dc_ip}:{ldap_port}"
-
             try:
-                # Use Kerberos if specified, otherwise use ldap3 with NTLM
+                # Print auth method info
                 if self.config.use_kerberos:
-                    # Use impacket for Kerberos LDAP authentication
-                    from impacket.ldap import ldap as ldap_impacket
-                    from ldap3 import Server, Connection, NTLM, ALL, SUBTREE, SASL, KERBEROS
-                    import os
-
-                    # Check for ccache in KRB5CCNAME environment variable
                     ccache_file = os.environ.get('KRB5CCNAME', '')
                     if ccache_file:
                         print(f"[*] Using Kerberos authentication with ccache: {ccache_file}")
                     else:
                         print("[*] Using Kerberos authentication for AD enumeration...")
-
-                    ldap_url = f"{'ldaps' if self.config.use_ldaps else 'ldap'}://{dc_ip}"
-                    impacket_conn = ldap_impacket.LDAPConnection(url=ldap_url, baseDN=self.config.domain, dstIp=dc_ip)
-
-                    # Kerberos login via impacket
-                    # useCache=True (default) tells impacket to use ccache from KRB5CCNAME if available
-                    # Domain should be uppercase for Kerberos realm matching
-                    krb_domain = self.config.domain.upper() if self.config.domain else ''
-                    impacket_conn.kerberosLogin(
-                        user=self.config.username,
-                        password=self.config.password or '',
-                        domain=krb_domain,
-                        lmhash=self.config.lmhash or '',
-                        nthash=self.config.nthash or '',
-                        aesKey=self.config.aesKey,
-                        kdcHost=self.config.dc_ip,
-                        useCache=True  # Use ccache from KRB5CCNAME if available
-                    )
-
-                    # For the rest of the enumeration, we need to use the impacket connection
-                    # since ldap3's Kerberos support is complex to set up
-                    conn = impacket_conn
-                    use_impacket = True
                 elif self.config.nthash:
-                    # Use impacket for NTLM pass-the-hash authentication
-                    # ldap3 doesn't support pass-the-hash natively, so we use impacket
-                    from impacket.ldap import ldap as ldap_impacket
-
                     print("[*] Using NTLM pass-the-hash authentication for AD enumeration...")
 
-                    protos = ['ldaps'] if self.config.use_ldaps else ['ldap', 'ldaps']
-                    impacket_conn = None
-                    for proto in protos:
-                        try:
-                            ldap_url = f"{proto}://{dc_ip}"
-                            impacket_conn = ldap_impacket.LDAPConnection(url=ldap_url, baseDN=self.config.domain, dstIp=dc_ip, signing=proto == 'ldap')
-                            impacket_conn.login(
-                                user=self.config.username,
-                                password='',
-                                domain=self.config.domain,
-                                lmhash=self.config.lmhash or '',
-                                nthash=self.config.nthash,
-                                authenticationChoice='sasl'
-                            )
-                            break
-                        except Exception as e:
-                            if '80090346' in str(e) and proto == 'ldap':
-                                continue
-                            raise
-
-                    conn = impacket_conn
-                    use_impacket = True
-                else:
-                    # Use impacket for NTLM password auth. Unlike ldap3, impacket negotiates
-                    # NTLM signing flags in the handshake, satisfying LDAP signing enforcement
-                    # on port 389. For channel binding enforcement, retry with ldaps://.
-                    from impacket.ldap import ldap as ldap_impacket
-
-                    if self.config.null_auth:
-                        # Null/anonymous bind — impacket requires credentials, use ldap3 for this
-                        import ssl
-                        from ldap3 import Server, Connection, ALL, Tls
-                        port = 636 if self.config.use_ldaps else 389
-                        tls_config = Tls(validate=ssl.CERT_NONE) if self.config.use_ldaps else None
-                        server = Server(dc_ip, port=port, use_ssl=self.config.use_ldaps, tls=tls_config, get_info=ALL)
-                        conn = Connection(server, auto_bind=True, auto_referrals=False)
-                        use_impacket = False
-                    else:
-                        protos = ['ldaps'] if self.config.use_ldaps else ['ldap', 'ldaps']
-                        impacket_conn = None
-                        for proto in protos:
-                            try:
-                                impacket_conn = ldap_impacket.LDAPConnection(
-                                    url=f"{proto}://{dc_ip}", baseDN=self.config.domain, dstIp=dc_ip, signing=proto == 'ldap'
-                                )
-                                impacket_conn.login(
-                                    user=self.config.username,
-                                    password=self.config.password,
-                                    domain=self.config.domain or '',
-                                    lmhash='',
-                                    nthash='',
-                                    authenticationChoice='sasl'
-                                )
-                                break
-                            except Exception as e:
-                                if '80090346' in str(e) and proto == 'ldap':
-                                    continue
-                                raise
-                        conn = impacket_conn
-                        use_impacket = True
-
-                # Build search base from domain
-                search_base = ','.join([f"DC={part}" for part in self.config.domain.split('.')])
+                conn, use_impacket, search_base = connect_ldap(self.config, dc_ip)
 
                 # Detect tier-0 assets (SCCM, ADCS, Exchange) if not using null auth
                 # Note: Tier0Detector requires ldap3 connection, skip for Kerberos/impacket
@@ -381,7 +275,8 @@ class TargetParser:
 
                     print(f"[+] Retrieved {len(hostnames_to_resolve)} computers")
                 else:
-                    # Use ldap3's paged search for NTLM
+                    # Use ldap3's paged search for null/anonymous auth
+                    from ldap3 import SUBTREE
                     page_size = self.config.ad_page_size
                     cookie = None
                     total_retrieved = 0

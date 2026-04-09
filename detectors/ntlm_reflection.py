@@ -4,11 +4,12 @@ Identifies hosts vulnerable to CVE-2025-33073 (NTLM Reflection attack)
 """
 
 from impacket.dcerpc.v5 import transport, rrp, rprn
-from impacket.dcerpc.v5.rpcrt import RPC_C_AUTHN_GSS_NEGOTIATE
 from impacket.smbconnection import SessionError
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 import threading
 import time
+
+from core.auth import configure_rpc_auth, connect_dce, is_kerberos_error
 
 
 class NTLMReflectionDetector:
@@ -271,44 +272,13 @@ class NTLMReflectionDetector:
             try:
                 # Create RPC transport over SMB named pipe
                 rpc = transport.DCERPCTransportFactory(f"ncacn_np:{target}[\\pipe\\winreg]")
-
-                # Set credentials
-                use_kerberos = self.config.should_use_kerberos(target)
-                if self.config.username:
-                    if use_kerberos:
-                        rpc.set_credentials(
-                            self.config.username,
-                            self.config.password or '',
-                            self.config.domain or '',
-                            self.config.lmhash or '',
-                            self.config.nthash or '',
-                            self.config.aesKey
-                        )
-                        rpc.set_kerberos(True, self.config.dc_ip)
-                    else:
-                        rpc.set_credentials(
-                            self.config.username,
-                            self.config.password,
-                            self.config.domain or '',
-                            self.config.lmhash or '',
-                            self.config.nthash or ''
-                        )
-
-                # Get DCE/RPC handle
-                dce = rpc.get_dce_rpc()
-
-                # Set Kerberos auth if needed
-                if use_kerberos:
-                    dce.set_auth_type(RPC_C_AUTHN_GSS_NEGOTIATE)
+                use_kerberos = configure_rpc_auth(self.config, rpc, target)
 
                 # Connect and bind to winreg
                 try:
-                    dce.connect()
-                    dce.bind(rrp.MSRPC_UUID_RRP)
+                    dce = connect_dce(rpc, use_kerberos, rrp.MSRPC_UUID_RRP)
                 except Exception as conn_err:
-                    # Handle Kerberos-specific errors - do NOT retry
-                    conn_error = str(conn_err).lower()
-                    if 'kdc' in conn_error or 'kerberos' in conn_error or 'krb' in conn_error:
+                    if is_kerberos_error(conn_err):
                         if self.config.verbose >= 3:
                             print(f"[!] Kerberos auth failed for UBR check on {target}: {conn_err}")
                         return None
@@ -379,45 +349,23 @@ class NTLMReflectionDetector:
                 if self.config.verbose >= 3:
                     print(f"[*] Checking PrintSpooler on {target} via RPC over TCP")
 
-                # Create RPC transport
+                # Create RPC transport and set credentials
                 rpctransport = transport.DCERPCTransportFactory(stringbinding)
-
-                # Set credentials
-                use_kerberos = self.config.should_use_kerberos(target)
-                if self.config.username:
-                    if use_kerberos:
-                        rpctransport.set_credentials(
-                            self.config.username,
-                            self.config.password or '',
-                            self.config.domain or '',
-                            self.config.lmhash or '',
-                            self.config.nthash or '',
-                            self.config.aesKey
-                        )
-                        rpctransport.set_kerberos(True, self.config.dc_ip)
-                    else:
-                        rpctransport.set_credentials(
-                            self.config.username,
-                            self.config.password,
-                            self.config.domain or '',
-                            self.config.lmhash or '',
-                            self.config.nthash or ''
-                        )
+                use_kerberos = configure_rpc_auth(self.config, rpctransport, target)
 
                 # Get DCE/RPC connection
                 dce = rpctransport.get_dce_rpc()
 
                 # Set Kerberos auth if needed
                 if use_kerberos:
-                    dce.set_auth_type(RPC_C_AUTHN_GSS_NEGOTIATE)
+                    from impacket.dcerpc.v5.rpcrt import RPC_C_AUTHN_GSS_NEGOTIATE as _GSS
+                    dce.set_auth_type(_GSS)
 
                 # Connect
                 try:
                     dce.connect()
                 except Exception as conn_err:
-                    # Handle Kerberos-specific errors - do NOT retry
-                    conn_error = str(conn_err).lower()
-                    if 'kdc' in conn_error or 'kerberos' in conn_error or 'krb' in conn_error:
+                    if is_kerberos_error(conn_err):
                         if self.config.verbose >= 3:
                             print(f"[!] Kerberos auth failed for PrintSpooler check on {target}: {conn_err}")
                         return False

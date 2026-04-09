@@ -9,6 +9,8 @@ import socket
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Set, Tuple, Optional
 
+from core.auth import connect_ldap as _connect_ldap_shared
+
 
 class GhostSPNDetector:
     """
@@ -160,65 +162,11 @@ class GhostSPNDetector:
     def _connect_ldap(self, dc_ip: str) -> Tuple:
         """Establish LDAP connection. Returns (conn, use_impacket, search_base).
 
-        Uses impacket for all auth types:
-          - signing=True on ldap:// satisfies LDAP signing enforcement (00002028)
-          - authenticationChoice='sasl' on ldaps:// computes CBT from the TLS cert,
-            satisfying channel binding enforcement (80090346)
-          - Falls back ldap -> ldaps automatically on 80090346
+        Delegates to the shared auth module which handles all auth types
+        (Kerberos, pass-the-hash, password) and automatic ldap→ldaps fallback
+        on channel binding enforcement (80090346).
         """
-        from impacket.ldap import ldap as ldap_impacket
-
-        search_base = ''
-        if self.config.domain:
-            search_base = ','.join(f"DC={part}" for part in self.config.domain.split('.'))
-
-        use_ldaps = self.config.use_ldaps
-        protos = ['ldaps'] if use_ldaps else ['ldap', 'ldaps']
-
-        for proto in protos:
-            try:
-                conn = ldap_impacket.LDAPConnection(
-                    url=f"{proto}://{dc_ip}", baseDN=self.config.domain, dstIp=dc_ip,
-                    signing=proto == 'ldap'
-                )
-
-                if self.config.use_kerberos:
-                    krb_domain = self.config.domain.upper() if self.config.domain else ''
-                    conn.kerberosLogin(
-                        user=self.config.username,
-                        password=self.config.password or '',
-                        domain=krb_domain,
-                        lmhash=self.config.lmhash or '',
-                        nthash=self.config.nthash or '',
-                        aesKey=self.config.aesKey,
-                        kdcHost=self.config.dc_ip,
-                        useCache=True,
-                    )
-                elif self.config.nthash:
-                    conn.login(
-                        user=self.config.username,
-                        password='',
-                        domain=self.config.domain,
-                        lmhash=self.config.lmhash or '',
-                        nthash=self.config.nthash,
-                        authenticationChoice='sasl'
-                    )
-                else:
-                    conn.login(
-                        user=self.config.username,
-                        password=self.config.password,
-                        domain=self.config.domain or '',
-                        lmhash='',
-                        nthash='',
-                        authenticationChoice='sasl'
-                    )
-
-                return conn, True, search_base
-
-            except Exception as e:
-                if '80090346' in str(e) and proto == 'ldap':
-                    continue
-                raise
+        return _connect_ldap_shared(self.config, dc_ip)
 
     def _check_wildcard_dns(self, conn, search_base: str, use_impacket: bool) -> bool:
         """Return True if any wildcard DNS entry exists in DomainDnsZones."""

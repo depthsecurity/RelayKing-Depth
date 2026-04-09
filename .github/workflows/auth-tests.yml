@@ -1,0 +1,121 @@
+name: Auth Tests
+
+on:
+  push:
+    paths:
+      - 'core/auth.py'
+      - 'core/creds_checker.py'
+      - 'core/target_parser.py'
+      - 'detectors/**'
+      - 'tests/**'
+      - '.github/workflows/auth-tests.yml'
+  pull_request:
+    paths:
+      - 'core/auth.py'
+      - 'core/creds_checker.py'
+      - 'core/target_parser.py'
+      - 'detectors/**'
+      - 'tests/**'
+
+jobs:
+  test-stubbed:
+    name: "Stubbed – Python ${{ matrix.python-version }} / ${{ matrix.os }}"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install pytest pytest-cov
+      - name: Run tests with coverage
+        run: >
+          pytest tests/ -v
+          --cov=core.auth
+          --cov-report=term-missing
+          --cov-report=xml:coverage-stubbed.xml
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-stubbed-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: coverage-stubbed.xml
+
+  test-full:
+    name: "Full deps – Python ${{ matrix.python-version }} / ${{ matrix.os }}"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install pytest pytest-cov -r requirements.txt
+      - name: Run tests with coverage
+        run: >
+          pytest tests/ -v
+          --cov=core.auth
+          --cov-report=term-missing
+          --cov-report=xml:coverage-full.xml
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-full-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: coverage-full.xml
+
+  coverage-report:
+    name: Coverage summary
+    needs: [test-stubbed, test-full]
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest pytest-cov coverage
+      - name: Download all coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: coverage-reports
+      - name: Combine and report
+        run: |
+          pip install coverage
+          # find all coverage XML files and generate a combined report
+          echo "## Coverage reports by OS" > coverage-summary.md
+          for f in coverage-reports/*/coverage-*.xml; do
+            name=$(basename "$(dirname "$f")")
+            echo "### $name" >> coverage-summary.md
+            python -c "
+          import xml.etree.ElementTree as ET
+          tree = ET.parse('$f')
+          root = tree.getroot()
+          rate = float(root.attrib.get('line-rate', 0)) * 100
+          print(f'  Line coverage: {rate:.1f}%')
+          " >> coverage-summary.md
+          done
+          echo "" >> coverage-summary.md
+          cat coverage-summary.md
+      - name: Post coverage to PR summary
+        run: cat coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+  lint:
+    name: Static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pyflakes pycodestyle
+      - run: pyflakes core/auth.py
+      - run: pycodestyle --max-line-length=120 --ignore=E501,W503 core/auth.py
