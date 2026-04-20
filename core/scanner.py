@@ -8,6 +8,8 @@ from typing import Dict, List
 import os
 import sys
 import socket
+import string
+import datetime
 
 try:
     import dns.resolver
@@ -88,7 +90,7 @@ class RelayKingScanner:
 
         # Check if given credential is valid
         creds_status = self.cred_checker.check_creds()
-        if creds_status['status'] != "success":
+        if creds_status['status'] != "Success":
             print(f"[*] Given credential looks invalid: {creds_status['error']}\nExitting ...")
             return {
                 'status': "Invalid_credential",
@@ -137,6 +139,18 @@ class RelayKingScanner:
         # Normal flow: parse targets from scratch
         print("[*] Parsing targets...")
         self.all_targets = self.target_parser.parse_targets()
+        
+        # Write target to file - for better observability
+        base_path = os.path.dirname(os.path.abspath(self.config.output_file))
+        timestamp = format(datetime.datetime.now(), '%Y%m%d_%H%M%S')
+        target_file = os.path.join(base_path, f"target_{timestamp}.txt")
+        try:
+            with open(target_file, 'w') as f:
+                f.write('\n'.join(self.all_targets) + '\n')
+            print(f"\n[+] Scan target list written to: {target_file}")
+            print(f"    Contains {len(self.all_targets)} scan target(s)")
+        except Exception as e:
+            print(f"\n[!] Error writing target list to {target_file}: {e}")
 
         if not self.all_targets:
             print("[!] No targets to scan")

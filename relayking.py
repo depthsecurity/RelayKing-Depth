@@ -175,13 +175,13 @@ def main():
                 characters = string.ascii_letters + string.digits
                 random_string = "".join(random.choice(characters) for _ in range(10))
                 output_path = base_name + "_" + random_string
-                print(f"Testing log file creation with filename '{output_path}' ... ")
+                print(f"[+] Testing log file creation with filename '{output_path}' ... ")
                 try:
                     with open(output_path, 'w') as f:
                         f.write("check")
-                    print(f"Success. Deleting it ... ")
+                    print(f"[+] Success. Deleting it ... ")
                     os.remove(output_path)
-                    print(f"Done.")
+                    print(f"[+] Done.")
                 except Exception as e:
                         print(f"\n[!] Error writing {output_path}: {e}")
                         ready_to_output = False
@@ -194,7 +194,7 @@ def main():
                     ready_to_output = False
 
         if(ready_to_output == False):
-            print("Cannot generate output file - we should not resume")
+            print("[!] Cannot generate output file - we should not resume")
             return
 
         # Save output config to session for future resume
@@ -204,8 +204,8 @@ def main():
         scanner = RelayKingScanner(config, session=session)
         status = scanner.prepare()
 
-        # grouping
-        print(f"hosts: {status['number_of_target']} / max_scangroup: {config.max_scangroup} / split_into: {config.split_into} / skip: {config.skip}")
+        if(status['status'] != "Success"):
+            return
 
         if(config.max_scangroup == 0) and (config.split_into == 1):
             #print("default - all")
@@ -227,7 +227,7 @@ def main():
             else:
                 idxlen = int(math.log10(split_into-1))+1
 
-        print(f"Targets have been split into {split_into} groups. Each group has {group_size} hosts. Totally {status['number_of_target']} targets to be scanned")
+        print(f"[+] Targets have been split into {split_into} groups. Each group has {group_size} hosts. Totally {status['number_of_target']} targets to be scanned")
 
         # Determine which groups to skip (session-completed or --skip)
         completed_groups = session.get_completed_groups() if session else set()
@@ -239,11 +239,11 @@ def main():
         e_idx = 0
         for i in range(split_into):
             if (i < config.skip):
-                print(f"Skipping group {i}: Skip to group {config.skip}")
+                print(f"[+] Skipping group {i}: Skip to group {config.skip}")
                 continue
 
             if i in completed_groups:
-                print(f"Skipping group {i}: Already completed (from session)")
+                print(f"[+] Skipping group {i}: Already completed (from session)")
                 continue
 
             s_idx = i * group_size
@@ -251,7 +251,7 @@ def main():
             if(e_idx > status['number_of_target']):
                 e_idx = status['number_of_target']
 
-            print(f"Group {i} of {split_into}: Scanning {group_size}(or less) hosts with index {s_idx} to {e_idx} of total {status['number_of_target']}")
+            print(f"[+] Group {i} of {split_into}: Scanning {group_size}(or less) hosts with index {s_idx} to {e_idx} of total {status['number_of_target']}")
             results = scanner.scan(s_idx, e_idx)
             # Stamp elapsed time before formatting so the formatter can include it in the report
             results['scan_duration'] = time.time() - start_time
@@ -260,6 +260,9 @@ def main():
             # Mark group complete in session
             if session:
                 session.mark_group_complete(i)
+
+            # Wait to see if additional Ctrl-C
+            time.sleep(1)
 
     except KeyboardInterrupt:
         # Session is saved by scanner's KeyboardInterrupt handler

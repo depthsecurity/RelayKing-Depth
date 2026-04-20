@@ -79,11 +79,19 @@ class TargetParser:
         if self.config.audit_mode or self.config.coerce_all:
             self._enumerate_ad()
 
-        return sorted(list(self.targets))
+        non_tier0 = self.targets - self.tier0_assets
+
+        aligned = list(self.tier0_assets)
+        aligned += list(non_tier0)
+
+        print(f"[+] Tier-0: {len(self.tier0_assets)}; Non-Tier0: {len(non_tier0)}; Totally {len(aligned)} targets")
+
+        return aligned
+        # return sorted(list(self.targets))
 
     def _parse_target(self, target: str):
         """Parse a single target specification"""
-
+ 
         # Check for CIDR notation
         if '/' in target:
             self._parse_cidr(target)
@@ -360,7 +368,7 @@ class TargetParser:
                     try:
 #page_size now reads from self.config.ad_page_size so the --ad-page-size flag actually takes effect on this code path
 # add SimplePagedResultsControl to get full results.
-                        page_size = getattr(self.config, 'ad_page_size', 1000) 
+                        page_size = getattr(self.config, 'ad_page_size', 1000)
                         paged_control = ldapasn1_impacket.SimplePagedResultsControl(size=page_size)
                         conn.search(
                             searchBase=search_base,
@@ -438,6 +446,9 @@ class TargetParser:
                             print(f"    - {dc}")
                     elif self.config.verbose >= 2:
                         print(f"[+] Found {len(dc_hostnames)} Domain Controller(s)")
+                    
+                    for dc in sorted(dc_hostnames):
+                        self.tier0_assets.add(dc.upper())
                 else:
                     if self.config.krb_dc_only:
                         print("[!] Warning: Could not enumerate Domain Controllers, --krb-dc-only may not work correctly")

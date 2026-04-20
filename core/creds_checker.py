@@ -21,7 +21,7 @@ class CredentialChecker:
         Check given credentials
 
         Returns string with:
-            - status: "success"
+            - status: "Success"
             - error: Error message
         """
         result = {
@@ -67,7 +67,7 @@ class CredentialChecker:
                         authenticationChoice='sasl'
                     )
 
-                result['status'] = "success"
+                result['status'] = "Success"
                 result['error'] = "None"
                 return result
 
