@@ -6,6 +6,7 @@ enabling NTLM relay attacks via DNS registration.
 
 import re
 import socket
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Set, Tuple, Optional
 
@@ -25,6 +26,11 @@ class GhostSPNDetector:
 
     # SPN format: serviceclass/hostname[:port][/instancename]
     SPN_REGEX = re.compile(r'^[^/]+/([^:/]+)(?::\d+)?(?:/.*)?$', re.IGNORECASE)
+
+    # GUID hostnames (DSA GUIDs) resolve via _msdcs CNAMEs, not a relay vector.
+    # GUID service classes (e.g. DRSUAPI) are Kerberos-only.
+    GUID_REGEX = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+                            re.IGNORECASE)
 
     # SPNs whose service class is always self-referential - skip them
     SKIP_SERVICE_CLASSES = {'host', 'rpcss', 'wsman', 'exchangeinternalipaddress'}
@@ -104,12 +110,15 @@ class GhostSPNDetector:
                 if not m:
                     continue
 
-                # Skip self-referential service classes
                 service_class = spn.split('/')[0].lower()
                 if service_class in self.SKIP_SERVICE_CLASSES:
                     continue
+                if self.GUID_REGEX.match(service_class):
+                    continue
 
                 raw_host = m.group(1).lower()
+                if self.GUID_REGEX.match(raw_host.split('.')[0]):
+                    continue
 
                 # Promote short hostname to FQDN
                 if '.' not in raw_host and obj_domain:
@@ -128,6 +137,14 @@ class GhostSPNDetector:
         result['checked'] = len(hostnames)
         resolution_map = self._resolve_all(hostnames)
 
+        # A wildcard *existing* doesn't mean a given name resolved via it —
+        # real A records win. Probe to find the wildcard's IPs so we can
+        # tell catches apart from legit records.
+        wildcard_ips_by_domain: Dict[str, Set[str]] = {}
+        if has_wildcard_dns:
+            parents = {fqdn.split('.', 1)[1] for fqdn in hostnames if '.' in fqdn}
+            wildcard_ips_by_domain = self._probe_wildcard_targets(parents)
+
         # Classify findings
         for fqdn, entries in hostname_map.items():
             ips = resolution_map.get(fqdn)
@@ -141,15 +158,16 @@ class GhostSPNDetector:
                         'hostname': fqdn,
                     })
             elif has_wildcard_dns:
-                # Resolves but wildcard DNS exists - might be wildcard catch
-                for account, spn in entries:
-                    result['probably_vulnerable'].append({
-                        'account': account,
-                        'spn': spn,
-                        'hostname': fqdn,
-                        'resolved_to': list(ips),
-                    })
-            # else: legitimate DNS record, skip
+                parent = fqdn.split('.', 1)[1] if '.' in fqdn else ''
+                wc_ips = wildcard_ips_by_domain.get(parent, set())
+                if wc_ips and set(ips).issubset(wc_ips):
+                    for account, spn in entries:
+                        result['probably_vulnerable'].append({
+                            'account': account,
+                            'spn': spn,
+                            'hostname': fqdn,
+                            'resolved_to': list(ips),
+                        })
 
         return result
 
@@ -320,6 +338,13 @@ class GhostSPNDetector:
     # ──────────────────────────────────────────────────────────────
     # DNS helpers
     # ──────────────────────────────────────────────────────────────
+
+    def _probe_wildcard_targets(self, domains: Set[str]) -> Dict[str, Set[str]]:
+        """Resolve a bogus name in each domain to discover the wildcard's
+        target IPs. Hostnames with real A records resolve to different IPs."""
+        probes = {d: f"relayking-wc-{uuid.uuid4().hex[:12]}.{d}" for d in domains}
+        resolved = self._resolve_all(list(probes.values()))
+        return {d: set(resolved[name]) for d, name in probes.items() if resolved.get(name)}
 
     def _resolve_all(self, hostnames: List[str]) -> Dict[str, Optional[List[str]]]:
         """

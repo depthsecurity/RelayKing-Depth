@@ -482,8 +482,14 @@ class RelayAnalyzer:
 
         # Check for ADCS-specific description
         if protocol in ['http', 'https']:
-            if result and hasattr(result, 'additional_info') and result.additional_info.get('is_adcs'):
-                return f"ADCS relay to {protocol.upper()} on {host} - Certificate enrollment abuse (ESC8), potential domain compromise"
+            if result and hasattr(result, 'additional_info'):
+                info = result.additional_info
+                if info.get('is_adcs'):
+                    return (f"ADCS relay to {protocol.upper()} on {host} - "
+                            f"Certificate enrollment abuse (ESC8), potential domain compromise")
+                if info.get('adcs_unconfirmed'):
+                    return (f"Relay to {protocol.upper()} on {host} - "
+                            f"/certsrv/ matched but ADCS unconfirmed (catchall NTLM site)")
 
         descriptions = {
             'ldap': f"Relay to LDAP on {host} - Can create computer accounts, modify ACLs (RBCD, DACL abuse)",

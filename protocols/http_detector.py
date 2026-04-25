@@ -102,10 +102,15 @@ class HTTPDetector(BaseDetector):
                 result.additional_info['ntlm_enabled'] = True
                 result.additional_info['ntlm_paths'] = ntlm_paths
 
-                # Check for ADCS
+                # Check for ADCS. Validate against catchall NTLM web apps that
+                # 401 every URL (which would otherwise match /certsrv/ too).
                 if any('/certsrv' in path.lower() for path in ntlm_paths):
-                    result.additional_info['is_adcs'] = True
-                    result.additional_info['adcs_method'] = 'certsrv endpoint'
+                    scheme = 'https' if use_ssl else 'http'
+                    if self._is_catchall_ntlm(host, port, scheme) is False:
+                        result.additional_info['is_adcs'] = True
+                        result.additional_info['adcs_method'] = 'certsrv endpoint (validated)'
+                    else:
+                        result.additional_info['adcs_unconfirmed'] = True
 
                 # Check for SCCM
                 if any('ccm_system_windowsauth' in path.lower() or 'sms_mp' in path.lower() for path in ntlm_paths):
@@ -334,6 +339,15 @@ class HTTPDetector(BaseDetector):
                         print(f"[!] Error checking {path}: {e}")
 
         return ntlm_paths
+
+    def _is_catchall_ntlm(self, host: str, port: int, scheme: str):
+        """Returns True if random bogus paths also 401-NTLM (catchall site,
+        meaning /certsrv/ is not proof of ADCS), False otherwise, None on error."""
+        bogus = ['/relayking-validation-xyzzy/', '/relayking-not-real-9f3c/']
+        try:
+            return all(self._check_path_for_ntlm(host, port, scheme, p) for p in bogus)
+        except Exception:
+            return None
 
     def _check_path_for_ntlm(self, host: str, port: int, scheme: str, path: str) -> bool:
         """Check if a specific path requires NTLM authentication"""
