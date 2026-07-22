@@ -12,6 +12,43 @@ import socket
 class SMBDetector(BaseDetector):
     """Detector for SMB/SMB2/SMB3 protocols"""
 
+    @staticmethod
+    def _get_signing_required(conn) -> bool:
+        """
+        Determine whether the server *requires* SMB signing.
+
+        We cannot trust impacket's ``RequireSigning`` flag (nor
+        ``isSigningRequired()``, which returns the same value): impacket forces
+        it to True whenever the negotiated dialect is SMB 3.1.1, regardless of
+        the server's actual security mode (see smb3.py negotiateSession, the
+        "Always Sign" branch). Since Windows 10 / Server 2016+ negotiate 3.1.1
+        by default, that reports "signing required" on hosts where signing is
+        only *enabled* but not required - which is a valid relay target.
+
+        The authoritative signal is the SMB2_NEGOTIATE_SIGNING_REQUIRED bit in
+        the server's negotiate-response SecurityMode. impacket stores that raw
+        value in ServerSecurityMode, but only for dialect >= 3.0. For 2.0/2.1
+        (and SMB1) the RequireSigning flag is accurate because the 3.1.1
+        override does not apply there.
+        """
+        smb_conn = conn._SMBConnection
+
+        # SMB1 path: isSigningRequired() reflects the real state
+        if isinstance(smb_conn, smb.SMB):
+            return conn.isSigningRequired()
+
+        connection = smb_conn._Connection
+        dialect = connection.get("Dialect", 0)
+
+        if dialect >= smb3.SMB2_DIALECT_30:
+            # ServerSecurityMode is the raw server SecurityMode; test the
+            # REQUIRED bit directly to bypass impacket's 3.1.1 override.
+            server_security_mode = connection.get("ServerSecurityMode", 0)
+            return bool(server_security_mode & smb3.SMB2_NEGOTIATE_SIGNING_REQUIRED)
+
+        # SMB 2.0 / 2.1: RequireSigning accurately reflects the REQUIRED bit
+        return connection.get("RequireSigning", False)
+
     def detect(self, host: str, port: int = 445) -> ProtocolResult:
         """Detect SMB configuration"""
 
@@ -61,12 +98,7 @@ class SMBDetector(BaseDetector):
 
                             # Still get signing info from negotiation (doesn't require auth)
                             try:
-                                dialect = conn.getDialect()
-                                smbv1 = (dialect == SMB_DIALECT)
-                                if smbv1:
-                                    result.signing_required = conn.isSigningRequired()
-                                else:
-                                    result.signing_required = conn._SMBConnection._Connection.get("RequireSigning", False)
+                                result.signing_required = self._get_signing_required(conn)
                             except:
                                 pass
 
@@ -89,7 +121,6 @@ class SMBDetector(BaseDetector):
 
                 # Get SMB dialect/version
                 dialect = conn.getDialect()
-                smbv1 = (dialect == SMB_DIALECT)
 
                 if dialect == SMB_DIALECT:
                     result.version = 'SMB1'
@@ -106,16 +137,11 @@ class SMBDetector(BaseDetector):
                 else:
                     result.version = f'Unknown ({hex(dialect)})'
 
-                # Check signing requirement using NetExec's approach
-                # For SMBv1, use isSigningRequired()
-                # For SMB2+, access the negotiation parameter directly
+                # Check signing requirement from the server's negotiate-response
+                # SecurityMode (see _get_signing_required for why we can't use
+                # impacket's RequireSigning flag directly).
                 try:
-                    if smbv1:
-                        result.signing_required = conn.isSigningRequired()
-                    else:
-                        # SMB2+: Access the RequireSigning from protocol negotiation
-                        # This is set during negotiation, before authentication
-                        result.signing_required = conn._SMBConnection._Connection.get("RequireSigning", False)
+                    result.signing_required = self._get_signing_required(conn)
                 except Exception as e:
                     # Fallback to isSigningRequired() if we can't access internal state
                     result.signing_required = conn.isSigningRequired()
@@ -157,16 +183,8 @@ class SMBDetector(BaseDetector):
                     result.error = 'Authentication failed'
 
                     # Still try to get signing info from the negotiation
-                    # Check dialect first
                     try:
-                        dialect = conn.getDialect()
-                        smbv1 = (dialect == SMB_DIALECT)
-
-                        if smbv1:
-                            result.signing_required = conn.isSigningRequired()
-                        else:
-                            # SMB2+: Access RequireSigning from protocol negotiation
-                            result.signing_required = conn._SMBConnection._Connection.get("RequireSigning", False)
+                        result.signing_required = self._get_signing_required(conn)
                     except:
                         pass
 
@@ -176,13 +194,7 @@ class SMBDetector(BaseDetector):
 
                     # Try to get signing info even with access denied
                     try:
-                        dialect = conn.getDialect()
-                        smbv1 = (dialect == SMB_DIALECT)
-
-                        if smbv1:
-                            result.signing_required = conn.isSigningRequired()
-                        else:
-                            result.signing_required = conn._SMBConnection._Connection.get("RequireSigning", False)
+                        result.signing_required = self._get_signing_required(conn)
                     except:
                         pass
                 else:
