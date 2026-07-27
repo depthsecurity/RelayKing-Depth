@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "relayking"
-version = "1.0.0"
+version = "1.1.1"
 description = "NTLM & Kerberos Relay Detection and Enumeration Tool"
 readme = "README.md"
 license = {text = "MIT"}
@@ -32,6 +32,9 @@ relayking = "relayking:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
+
+[tool.setuptools.package-data]
+protocols = ["*.dict"]
 
 [tool.setuptools]
 py-modules = ["relayking"]

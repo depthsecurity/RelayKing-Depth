@@ -11,6 +11,7 @@ import ssl
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .base_detector import BaseDetector, ProtocolResult
+from importlib.resources import files
 
 # Try to import requests-ntlm for EPA testing
 try:
@@ -300,19 +301,20 @@ class HTTPDetector(BaseDetector):
         scheme = 'https' if use_ssl else 'http'
 
         # Load wordlist
-        wordlist_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'web_ntlm_paths.dict')
-
-        if not os.path.exists(wordlist_path):
+        try:
+            wordlist_ref = files('protocols').joinpath('web_ntlm_paths.dict')
+            paths = [
+                line.strip()
+                for line in wordlist_ref.read_text().splitlines()
+                if line.strip() and not line.startswith('#')
+            ]
+        except (FileNotFoundError, TypeError):
             if self._is_verbose(1):
-                print(f"[!] Wordlist not found: {wordlist_path}")
+                print(f"[!] Wordlist not found: web_ntlm_paths.dict")
             return self._check_basic_paths(host, port, use_ssl)
-
-        with open(wordlist_path, 'r') as f:
-            paths = [line.strip() for line in f if line.strip() and not line.startswith('#')]
 
         if self._is_verbose(2):
             print(f"[*] Enumerating {len(paths)} paths on {scheme}://{host}:{port}")
-
         ntlm_paths = []
 
         # Use thread pool for concurrent path checking (20 threads for speed)
